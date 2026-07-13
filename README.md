@@ -1,81 +1,150 @@
-# XRP Price Alert Bot
+"""
+XRP Price Alert Bot
+Watches XRP's price against your grid bot's upper and lower limits, and
+texts you when price gets close to either edge, since that's when your
+bot is at risk of going idle and might need its range adjusted.
 
-Checks XRP's 24hr price change every 15 minutes and texts you when it moves
-more than a threshold you set (default: 5%). Runs entirely on GitHub's free
-servers, nothing needs to stay on at your end.
+Designed to run on a schedule via GitHub Actions (see .github/workflows/check.yml).
+State (last alert sent) is persisted to state.json and committed back to the repo
+so the bot doesn't spam you every run once a threshold is crossed.
+"""
 
-## What it costs
+import os
+import json
+import sys
+from datetime import datetime, timezone
+import urllib.request
+import urllib.error
+import urllib.parse
 
-- GitHub Actions: free for a repo this small (public repos have generous free
-  minutes; private repos also get a free monthly allowance that this easily
-  fits under).
-- Twilio: free trial credit covers a good number of texts (and calls, later)
-  to your own verified number. After the trial credit runs out, texts are a
-  fraction of a cent each.
+# ---------- SETTINGS: edit these to match your grid bot ----------
+LOWER_LIMIT = 0.915            # your bot's lower limit (USD)
+UPPER_LIMIT = 1.356            # your bot's upper limit (USD)
+BUFFER_PCT = 10.0             # alert when price is within this % of the range from either edge
+COOLDOWN_HOURS = 12           # don't re-alert for the same edge within this many hours
+# --------------------------------------------------------------------
 
-## One-time setup
+STATE_FILE = "state.json"
+COINGECKO_URL = (
+    "https://api.coingecko.com/api/v3/simple/price"
+    "?ids=ripple&vs_currencies=usd"
+)
 
-### 1. Twilio account
-1. Sign up at twilio.com (free trial).
-2. From the Twilio Console dashboard, copy your **Account SID** and **Auth
-   Token**.
-3. Get a free trial phone number (Twilio assigns you one).
-4. Under "Verified Caller IDs," verify your own cell number. Trial accounts
-   can only text/call numbers you've verified.
 
-### 2. Create a GitHub repo
-1. Create a new **private** repo (e.g. `xrp-alert-bot`).
-2. Upload these three files, keeping the folder structure:
-   - `check_price.py`
-   - `.github/workflows/check.yml`
-   - `state.json` (starter file, included)
+def get_xrp_price():
+    """Fetch current XRP price from CoinGecko (free, no API key needed)."""
+    req = urllib.request.Request(COINGECKO_URL, headers={"User-Agent": "xrp-alert-bot"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode())
+    return data["ripple"]["usd"]
 
-### 3. Add your secrets
-In the repo: **Settings -> Secrets and variables -> Actions -> New repository
-secret**. Add these four:
 
-| Secret name    | Value                                  |
-|----------------|-----------------------------------------|
-| `TWILIO_SID`   | Your Account SID                        |
-| `TWILIO_AUTH`  | Your Auth Token                         |
-| `TWILIO_FROM`  | Your Twilio trial phone number          |
-| `TWILIO_TO`    | Your own verified cell number           |
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r") as f:
+            return json.load(f)
+    return {"last_alert_direction": None, "last_alert_time": None}
 
-Use full international format for phone numbers, e.g. `+13135551234`.
 
-### 4. Test it
-Go to the **Actions** tab, select "XRP Price Check," and click **Run
-workflow** to trigger it manually. Check the log output to confirm it's
-reading the price correctly. If your secrets aren't set yet, it runs in
-"dry run" mode and just prints what it would have sent, so it's safe to test
-before Twilio is wired up.
+def save_state(state):
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f, indent=2)
 
-Once secrets are set and the schedule kicks in, it checks automatically
-every 15 minutes.
 
-## Adjusting the threshold
+def hours_since(iso_timestamp):
+    if not iso_timestamp:
+        return None
+    then = datetime.fromisoformat(iso_timestamp)
+    now = datetime.now(timezone.utc)
+    return (now - then).total_seconds() / 3600.0
 
-Open `check_price.py` and change these two lines near the top:
 
-```python
-THRESHOLD_PCT = 5.0          # alert if 24hr change exceeds +/- this %
-COOLDOWN_HOURS = 6           # don't re-alert same direction within this many hours
-```
+def send_sms(message):
+    """Send an SMS via Twilio. Requires TWILIO_SID, TWILIO_AUTH, TWILIO_FROM, TWILIO_TO
+    to be set as environment variables (GitHub Actions secrets)."""
+    import base64
 
-The cooldown exists so that if XRP is up 6% and stays up 6% for the next
-three checks, you get one text, not twelve.
+    sid = os.environ["TWILIO_SID"]
+    auth = os.environ["TWILIO_AUTH"]
+    from_number = os.environ["TWILIO_FROM"]
+    to_number = os.environ["TWILIO_TO"]
 
-## Upgrading to phone calls later
+    url = f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json"
+    payload = urllib.parse.urlencode({
+        "To": to_number,
+        "From": from_number,
+        "Body": message,
+    }).encode()
 
-When you're ready to switch from text to an actual call, Twilio's Voice API
-uses the same account and credentials you already have. It's a small code
-change in `send_sms()` (swap the Messages endpoint for the Calls endpoint
-with a short TwiML script to read out the alert). Just let me know when
-you're ready and I'll make that change.
+    creds = base64.b64encode(f"{sid}:{auth}".encode()).decode()
+    req = urllib.request.Request(url, data=payload, method="POST")
+    req.add_header("Authorization", f"Basic {creds}")
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
 
-## A couple of honest caveats
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            print("Twilio response:", resp.status)
+    except urllib.error.HTTPError as e:
+        print("Twilio error:", e.read().decode())
+        raise
 
-- CoinGecko's free API updates on a short delay (not tick-by-tick), which is
-  fine for a 5% daily-move alert but don't expect second-by-second precision.
-- GitHub's cron schedule is "best effort," meaning under heavy platform load
-  a run might fire a few minutes late. Not an issue for a 24hr threshold.
+
+def main():
+    price = get_xrp_price()
+    range_width = UPPER_LIMIT - LOWER_LIMIT
+    buffer_zone = range_width * (BUFFER_PCT / 100)
+
+    lower_alert_line = LOWER_LIMIT + buffer_zone
+    upper_alert_line = UPPER_LIMIT - buffer_zone
+
+    print(f"XRP price: ${price:.4f}  |  Range: ${LOWER_LIMIT:.4f}-${UPPER_LIMIT:.4f}  |  "
+          f"Alert zone: below ${lower_alert_line:.4f} or above ${upper_alert_line:.4f}")
+
+    edge = None
+    if price <= lower_alert_line:
+        edge = "lower"
+    elif price >= upper_alert_line:
+        edge = "upper"
+
+    if edge is None:
+        print("No alert. Price is comfortably inside the range.")
+        return
+
+    state = load_state()
+    hrs_since_last = hours_since(state.get("last_alert_time"))
+    same_edge_recent = (
+        state.get("last_alert_direction") == edge
+        and hrs_since_last is not None
+        and hrs_since_last < COOLDOWN_HOURS
+    )
+
+    if same_edge_recent:
+        print(f"Price is near the {edge} limit but still in cooldown "
+              f"({hrs_since_last:.1f}h since last {edge} alert). Skipping.")
+        return
+
+    if edge == "lower":
+        message = (
+            f"XRP ALERT: price ${price:.4f} is nearing your LOWER limit (${LOWER_LIMIT:.4f}). "
+            f"Might be time to check your bot's range."
+        )
+    else:
+        message = (
+            f"XRP ALERT: price ${price:.4f} is nearing your UPPER limit (${UPPER_LIMIT:.4f}). "
+            f"Might be time to check your bot's range."
+        )
+    print("Sending alert:", message)
+
+    # In dry-run mode (no Twilio secrets set), just print instead of sending
+    if "TWILIO_SID" in os.environ:
+        send_sms(message)
+    else:
+        print("[DRY RUN] Twilio secrets not set, skipping actual send.")
+
+    state["last_alert_direction"] = edge
+    state["last_alert_time"] = datetime.now(timezone.utc).isoformat()
+    save_state(state)
+
+
+if __name__ == "__main__":
+    main()
