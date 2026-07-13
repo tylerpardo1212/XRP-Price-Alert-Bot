@@ -1,7 +1,8 @@
 """
 XRP Price Alert Bot
-Checks XRP's 24hr price change and sends a text (or call, later) via Twilio
-when it crosses a threshold you set below.
+Watches XRP's price against your grid bot's upper and lower limits, and
+texts you when price gets close to either edge, since that's when your
+bot is at risk of going idle and might need its range adjusted.
 
 Designed to run on a schedule via GitHub Actions (see .github/workflows/check.yml).
 State (last alert sent) is persisted to state.json and committed back to the repo
@@ -16,26 +17,26 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-# ---------- SETTINGS: edit these ----------
-THRESHOLD_PCT = 5.0          # alert if 24hr change exceeds +/- this %
-COOLDOWN_HOURS = 6           # don't re-alert for the same direction within this many hours
-# --------------------------------------------
+# ---------- SETTINGS: edit these to match your grid bot ----------
+LOWER_LIMIT = 0.915            # your bot's lower limit (USD)
+UPPER_LIMIT = 1.356            # your bot's upper limit (USD)
+BUFFER_PCT = 10.0             # alert when price is within this % of the range from either edge
+COOLDOWN_HOURS = 12           # don't re-alert for the same edge within this many hours
+# --------------------------------------------------------------------
 
 STATE_FILE = "state.json"
 COINGECKO_URL = (
     "https://api.coingecko.com/api/v3/simple/price"
-    "?ids=ripple&vs_currencies=usd&include_24hr_change=true"
+    "?ids=ripple&vs_currencies=usd"
 )
 
 
-def get_xrp_change():
-    """Fetch current price and 24hr % change from CoinGecko (free, no API key needed)."""
+def get_xrp_price():
+    """Fetch current XRP price from CoinGecko (free, no API key needed)."""
     req = urllib.request.Request(COINGECKO_URL, headers={"User-Agent": "xrp-alert-bot"})
     with urllib.request.urlopen(req, timeout=15) as resp:
         data = json.loads(resp.read().decode())
-    price = data["ripple"]["usd"]
-    change_pct = data["ripple"]["usd_24h_change"]
-    return price, change_pct
+    return data["ripple"]["usd"]
 
 
 def load_state():
@@ -89,33 +90,49 @@ def send_sms(message):
 
 
 def main():
-    price, change_pct = get_xrp_change()
-    print(f"XRP price: ${price:.4f}  |  24hr change: {change_pct:.2f}%")
+    price = get_xrp_price()
+    range_width = UPPER_LIMIT - LOWER_LIMIT
+    buffer_zone = range_width * (BUFFER_PCT / 100)
 
-    direction = "up" if change_pct > 0 else "down"
-    state = load_state()
+    lower_alert_line = LOWER_LIMIT + buffer_zone
+    upper_alert_line = UPPER_LIMIT - buffer_zone
 
-    crossed = abs(change_pct) >= THRESHOLD_PCT
-    if not crossed:
-        print(f"No alert. |{change_pct:.2f}%| is under the {THRESHOLD_PCT}% threshold.")
+    print(f"XRP price: ${price:.4f}  |  Range: ${LOWER_LIMIT:.4f}-${UPPER_LIMIT:.4f}  |  "
+          f"Alert zone: below ${lower_alert_line:.4f} or above ${upper_alert_line:.4f}")
+
+    edge = None
+    if price <= lower_alert_line:
+        edge = "lower"
+    elif price >= upper_alert_line:
+        edge = "upper"
+
+    if edge is None:
+        print("No alert. Price is comfortably inside the range.")
         return
 
+    state = load_state()
     hrs_since_last = hours_since(state.get("last_alert_time"))
-    same_direction_recent = (
-        state.get("last_alert_direction") == direction
+    same_edge_recent = (
+        state.get("last_alert_direction") == edge
         and hrs_since_last is not None
         and hrs_since_last < COOLDOWN_HOURS
     )
 
-    if same_direction_recent:
-        print(f"Threshold crossed ({direction}) but still in cooldown "
-              f"({hrs_since_last:.1f}h since last {direction} alert). Skipping.")
+    if same_edge_recent:
+        print(f"Price is near the {edge} limit but still in cooldown "
+              f"({hrs_since_last:.1f}h since last {edge} alert). Skipping.")
         return
 
-    message = (
-        f"XRP ALERT: {direction.upper()} {abs(change_pct):.2f}% in 24hr. "
-        f"Current price: ${price:.4f}"
-    )
+    if edge == "lower":
+        message = (
+            f"XRP ALERT: price ${price:.4f} is nearing your LOWER limit (${LOWER_LIMIT:.4f}). "
+            f"Might be time to check your bot's range."
+        )
+    else:
+        message = (
+            f"XRP ALERT: price ${price:.4f} is nearing your UPPER limit (${UPPER_LIMIT:.4f}). "
+            f"Might be time to check your bot's range."
+        )
     print("Sending alert:", message)
 
     # In dry-run mode (no Twilio secrets set), just print instead of sending
@@ -124,7 +141,7 @@ def main():
     else:
         print("[DRY RUN] Twilio secrets not set, skipping actual send.")
 
-    state["last_alert_direction"] = direction
+    state["last_alert_direction"] = edge
     state["last_alert_time"] = datetime.now(timezone.utc).isoformat()
     save_state(state)
 
