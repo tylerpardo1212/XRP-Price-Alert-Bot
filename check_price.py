@@ -22,7 +22,7 @@ import base64
 LOWER_LIMIT = 0.915            # your bot's lower limit (USD)
 UPPER_LIMIT = 1.356            # your bot's upper limit (USD)
 BUFFER_PCT = 10.0             # alert when price is within this % of the range from either edge
-COOLDOWN_HOURS = 12           # don't re-alert for the same edge within this many hours
+COOLDOWN_HOURS = 2           # don't re-alert for the same edge within this many hours
 # --------------------------------------------------------------------
 
 STATE_FILE = "state.json"
