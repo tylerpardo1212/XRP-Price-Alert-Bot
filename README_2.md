@@ -1,6 +1,6 @@
 # XRP Price Alert Bot
 
-Checks XRP's 24hr price change every 15 minutes and texts you when it moves
+Checks XRP's 24hr price change every 15 minutes and calls you when it moves
 more than a threshold you set (default: 5%). Runs entirely on GitHub's free
 servers, nothing needs to stay on at your end.
 
@@ -70,7 +70,7 @@ BUFFER_PCT = 10.0             # alert when price is within this % of the range f
 COOLDOWN_HOURS = 12           # don't re-alert for the same edge within this many hours
 ```
 
-With these numbers, you'll get a text if price drops to about $0.959 or
+With these numbers, you'll get a call if price drops to about $0.959 or
 climbs to about $1.312, both 10% of the range's width away from the actual
 edges, giving you a heads up before your bot actually stops working, not
 after. The cooldown keeps it from texting you every 15 minutes while price
