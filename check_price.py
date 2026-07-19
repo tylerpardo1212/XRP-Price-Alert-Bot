@@ -20,7 +20,7 @@ import base64
 
 # ---------- SETTINGS: edit these to match your grid bot ----------
 LOWER_LIMIT = 1.075            # your bot's lower limit (USD)
-UPPER_LIMIT = 1.1075            # your bot's upper limit (USD)
+UPPER_LIMIT = 1.105            # your bot's upper limit (USD)
 BUFFER_PCT = 25.0             # alert when price is within this % of the range from either edge
 COOLDOWN_HOURS = 1           # don't re-alert for the same edge within this many hours
 # --------------------------------------------------------------------
