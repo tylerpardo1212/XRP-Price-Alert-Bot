@@ -19,10 +19,10 @@ import urllib.parse
 import base64
 
 # ---------- SETTINGS: edit these to match your grid bot ----------
-LOWER_LIMIT = 1.0          # your bot's lower limit (USD)
-UPPER_LIMIT = 1.0233            # your bot's upper limit (USD)
+LOWER_LIMIT = 1.0045          # your bot's lower limit (USD)
+UPPER_LIMIT = 1.0204           # your bot's upper limit (USD)
 BUFFER_PCT = 0.0             # alert when price is within this % of the range from either edge
-COOLDOWN_HOURS = 3          # don't re-alert for the same edge within this many hours
+COOLDOWN_HOURS = 2          # don't re-alert for the same edge within this many hours
 # --------------------------------------------------------------------
 
 STATE_FILE = "state.json"
